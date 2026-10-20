@@ -69,6 +69,8 @@ def dictify(data: Any) -> Any:
     # Need to ensure we make return objects fully serializable
     if isinstance(data, (int, float, str)) or data is None:
         return data
+    elif isinstance(data, np.generic):
+        return data.item()
     elif isinstance(data, Molecule):
         return {"smiles": data.smiles}
     elif isinstance(data, (List, tuple, Bag)):

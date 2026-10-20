@@ -1,0 +1,46 @@
+models: ['USPTO-MIT_RtoP_mixed.pt'] # rewritten at load time
+src: "none"
+output: /dev/null
+gpu: 0
+# Values below follow pretrain_finetune/finetune/RtoP/RtoP-MIT-mixed-aug5-translate.yml of otori-bird/retrosynthesis.
+beam_size: 10
+n_best: 10
+batch_size: 4096
+batch_type: tokens
+max_length: 1000
+seed: 0
+# Other options: defaults of onmt_translate (same list as the syntheseus RootAligned default checkpoint).
+align_debug: False
+alpha: 0.0
+attn_debug: False
+avg_raw_probs: False
+ban_unk_token: False
+beta: -0.0
+block_ngram_repeat: 0
+config: null
+coverage_penalty: 'none'
+data_type: 'text'
+dump_beam: ''
+fp32: False
+ignore_when_blocking: []
+int8: False
+length_penalty: 'none'
+log_file: ''
+log_file_level: '0'
+max_sent_length: null
+min_length: 0
+phrase_table: ''
+random_sampling_temp: 1.0
+random_sampling_topk: 0
+random_sampling_topp: 0.0
+ratio: -0.0
+replace_unk: False
+report_align: False
+report_time: False
+save_config: null
+shard_size: 10000
+src_feats: null
+stepwise_penalty: False
+tgt: null
+tgt_prefix: False
+verbose: False

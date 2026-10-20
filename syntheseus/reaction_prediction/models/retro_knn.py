@@ -58,8 +58,6 @@ class Adapter(nn.Module):
 
 
 def knn_prob(feats, store, lables, max_idx, k=32, temperature=5):
-    from torch_scatter import scatter
-
     dis, idx = store.search(feats, k)  # [B, K]
     pred = lables[idx].unsqueeze(-1)  # [B, K, 1]
 
@@ -69,6 +67,6 @@ def knn_prob(feats, store, lables, max_idx, k=32, temperature=5):
     bsz = feats.shape[0]
     output = torch.zeros(bsz, k, max_idx).to(feats)
 
-    scatter(src=knn_weight, out=output, index=pred, dim=-1)
+    output.scatter_add_(-1, pred, knn_weight)
 
     return output.sum(dim=1)

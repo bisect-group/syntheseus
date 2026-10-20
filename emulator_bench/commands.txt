@@ -1,0 +1,54 @@
+# Run all commands from the syntheseus submodule root: /home/adhil/github/EMULaToR/baselines/syntheseus
+# Environment for the full run: conda env "syntheseus_modern".
+# The pinned env "syntheseus" (environment.yml) is kept as a reference only.
+PY=/home/adhil/.conda/envs/syntheseus_modern/bin/python
+OUT=/home/adhil/github/EMULaToR/outputs/baselines/syntheseus
+
+# 1. Corpora (downloads, manifest in $OUT/corpora/manifest.json)
+$PY -m emulator_bench.corpora
+
+# 2. Checkpoints. The syntheseus default checkpoints download on first use into
+#    $OUT/checkpoints/syntheseus_default. The two forward checkpoints come from the authors:
+#    Chemformer: fined-tuned/uspto_mixed/last.ckpt -> $OUT/checkpoints/Chemformer/forward/original/last.ckpt
+#    R-SMILES:   models/RtoP/USPTO-MIT_RtoP_mixed.pt -> $OUT/checkpoints/RootAligned/forward/
+$PY -m emulator_bench.prepare_checkpoints
+
+# 3. GLN checkout and C++ library (no CUDA build needed)
+git clone https://github.com/kmaziarz/GLN $OUT/external/GLN
+git -C $OUT/external/GLN checkout 5437fa7a7cfe98354aa5b0e743b964a97971016c
+make -C $OUT/external/GLN/gln/mods/mol_gnn/mg_clib
+
+# 4. Overlap audit (CPU, 16 threads): writes $OUT/overlap/ and $OUT/summary_overlap_by_corpus.csv
+taskset -c 0-15 $PY -u -m emulator_bench.overlap
+
+# 5. Dry run, then the full run (every model x direction x split folder; test fold only)
+$PY -m emulator_bench.launch --gpus 0 --workers 4 --procs_per_gpu 4 --dry_run
+$PY -m emulator_bench.launch --gpus 0 --workers 4 --procs_per_gpu 4
+# Determinism: predict.py caps the process pools at 8 workers (RootAligned retro and MHNreact fork cpu_count() workers
+# per call). build_model keeps model.eval() for LocalRetro and RetroKNN and seeds RootAligned retro per input (CRC32).
+# launch.py sets PYTHONHASHSEED=0 for every child process.
+
+# 6. One model, one split (--folds train val test also works)
+$PY -m emulator_bench.launch --gpus 0 --models LocalRetro --directions retro \
+    --splits random_splits_grouped_rxn_key --folds test
+
+# 7. Summaries: $OUT/summary_topk.csv and $OUT/summary_overlap.csv
+$PY -m emulator_bench.aggregate
+
+# Smoke test (32 rows)
+S=<scratch dir>
+$PY -m emulator_bench.launch --runs_root $S --gpus 0 --workers 2 --procs_per_gpu 2 \
+    --splits random_splits_grouped_rxn_key --folds test --limit 32
+
+# Environment comparison (ranked top-10 lists and max score difference of two run folders)
+$PY -m emulator_bench.compare_runs $S/pinned/retro/LocalRetro/random_splits_grouped_rxn_key/all/test \
+    $S/modern/retro/LocalRetro/random_splits_grouped_rxn_key/all/test
+
+# Equivalence with the syntheseus CLI (retro, same JSONL)
+syntheseus eval-single-step data_dir=<jsonl dir with test.jsonl> model_class=LocalRetro fold=TEST \
+    num_top_results=10 results_dir=<dir> print_idxs=[1,3,5,10] include_predictions=True
+
+# Checks
+$PY -m pytest emulator_bench/tests -q
+ruff check emulator_bench && ruff format --check emulator_bench
+git diff --check

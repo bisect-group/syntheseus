@@ -1,0 +1,23 @@
+name: syntheseus
+channels:
+  - pytorch
+  - nvidia
+  - pyg
+  - conda-forge
+  - defaults
+dependencies:
+  - faiss-gpu
+  - numpy
+  - pandas
+  - pip>=25.2
+  - python==3.9.7
+  - pytorch=2.2.2=py3.9_cuda12.1_cudnn8.9.2_0
+  - pytorch-lightning==2.2.2
+  - pytorch-scatter==2.1.2
+  - rdchiral_cpp
+  - rdkit=2023.09.6
+  - scipy<1.12
+  - pip:
+    - --find-links https://data.dgl.ai/wheels/torch-2.2/cu121/repo.html
+    - dgl==2.4.0
+    - torchmetrics==1.5.1

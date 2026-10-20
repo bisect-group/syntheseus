@@ -1,0 +1,53 @@
+{
+  "_comment": "Zero-shot inference settings. Nothing is trained or tuned. 'source' names where each value comes from.",
+  "num_top_results": {
+    "retro": 10,
+    "forward": 10,
+    "source": "retro and forward: top 10 by user decision. Forward beam size 10 and n_best 10 of the original R-SMILES RtoP translate config and of Chemformer's own evaluation"
+  },
+  "batch_size": 16,
+  "batch_size_source": "syntheseus eval-single-step default (BaseEvalConfig.batch_size)",
+  "metrics": "top-k and MRR from syntheseus TopKMetricsAccumulator over num_top_results predictions; exact match on syntheseus Reaction equality (canonical SMILES with stereo, reactant bag order-free, reagents ignored); skip_repeats=True",
+  "seeds": "none: beam search is deterministic. syntheseus set_random_seed(0) is applied as in eval-single-step",
+  "models": {
+    "Chemformer": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {}, "notes": "Figshare article 23958114, fine-tuned by the syntheseus team on USPTO-50K from the authors' pre-trained checkpoint. beam size = num_top_results (ChemformerModel sets num_beams = num_results)."},
+      "forward": {"checkpoint": "authors_release", "model_kwargs": {}, "notes": "Authors' fined-tuned/uspto_mixed checkpoint (USPTO-MIT mixed) from https://az.box.com/s/7eci3nd9vy0xplqniitpk02rbg9q2zcq, file last.ckpt,. Beam size = num_top_results = 10."}
+    },
+    "GLN": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"dataset_name": "schneider50k"}, "notes": "Figshare article 23960733, released by the authors, USPTO-50K (schneider50k). Template set 'default'."}
+    },
+    "Graph2Edits": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"max_edit_steps": 9}, "notes": "Figshare article 25047314, released by the authors, USPTO-50K without reaction class. max_edit_steps=9 is the syntheseus default."}
+    },
+    "LocalRetro": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {}, "notes": "Figshare article 23960745, trained by the syntheseus team on USPTO-50K."}
+    },
+    "MEGAN": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"n_max_atoms": 200, "max_gen_steps": 16, "beam_batch_size": 10}, "notes": "Figshare article 23960748, trained by the syntheseus team on USPTO-50K (config.gin: dataset uspto_50k, no reaction type). Kwargs are the syntheseus defaults."}
+    },
+    "MHNreact": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"use_FPF": true, "num_additional_templates_to_run": 1000}, "notes": "Figshare article 23960766, trained by the syntheseus team on USPTO-50K. Kwargs are the syntheseus defaults."}
+    },
+    "RetroKNN": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {}, "notes": "Figshare article 23960769, trained by the syntheseus team on USPTO-50K (LocalRetro plus kNN datastore)."}
+    },
+    "RootAligned": {
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"num_augmentations": 20, "probability_from_score_temperature": 2.0}, "notes": "Figshare article 23960781, released by the authors, USPTO-50K P-to-R. beam 10, translate batch 2048 tokens, max_length 500 from the yml in the checkpoint."},
+      "forward": {"checkpoint": "authors_release", "model_kwargs": {"num_augmentations": 5}, "notes": "Authors' models/RtoP/USPTO-MIT_RtoP_mixed.pt (Google Drive folder 1c15h6TNU6MSNXzqB6dQVMWOs2Aae8hs6, file id 11T_d3s9ZClxIrJs66ky07asB-0Q-gv-T). Settings from RtoP-MIT-mixed-aug5-translate.yml: beam 10, n_best 10, batch 4096 tokens, max_length 1000, seed 0; augmentation 5 from RtoP-MIT-mixed-aug5-config.yml and the README; score_alpha 1 (score.py default)."}
+    }
+  },
+  "overlap_corpora": {
+    "retro": {
+      "Chemformer": "uspto50k_syntheseus",
+      "GLN": "uspto50k_syntheseus",
+      "Graph2Edits": "uspto50k_graph2edits",
+      "LocalRetro": "uspto50k_syntheseus",
+      "MEGAN": "uspto50k_syntheseus",
+      "MHNreact": "uspto50k_mhnreact",
+      "RetroKNN": "uspto50k_syntheseus",
+      "RootAligned": "uspto50k_syntheseus"
+    },
+    "forward": {"Chemformer": "uspto_mit", "RootAligned": "uspto_mit"}
+  }
+}
