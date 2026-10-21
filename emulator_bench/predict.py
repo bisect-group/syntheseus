@@ -55,7 +55,7 @@ def main() -> None:
     folder = cache_dir(args.out_root, args.model, args.direction, num_top)
 
     inputs = unique_inputs(args.out_root, args.model, args.direction, args.folds, args.limit)
-    done, _ = load_cache(folder)
+    done, *_ = load_cache(folder)
     todo = [k for k in list(inputs)[args.shard :: args.nshards] if k not in done]
     print(
         f"shard {args.shard}/{args.nshards}: {len(todo)} to do, {len(inputs)} unique inputs",
@@ -73,7 +73,8 @@ def main() -> None:
         keys = todo[i : i + batch_size]
         t0 = time.time()
         predictions = model([inputs[k] for k in keys], num_results=num_top)
-        save_batch(folder, keys, predictions, time.time() - t0)
+        skipped = frozenset(keys) & getattr(model, "skipped", frozenset())
+        save_batch(folder, keys, predictions, time.time() - t0, skipped)
         n = i + len(keys)
         print(f"{n}/{len(todo)} inputs, {n / (time.time() - t_start):.2f} inputs/s", flush=True)
     print(json.dumps({"shard": args.shard, "inputs": len(todo), "seconds": time.time() - t_start}))

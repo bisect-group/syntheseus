@@ -41,6 +41,46 @@ def seeded_root_aligned_class():
     return RootAlignedModel
 
 
+def megan_class():
+    """MEGAN that sends no molecule above its atom limit to the model; such inputs get no predictions."""
+    from syntheseus.reaction_prediction.inference import megan
+
+    class MEGANModel(megan.MEGANModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.skipped: set[str] = set()  # SMILES of oversize inputs
+
+        def _mols_to_batch(self, inputs):
+            # Its mask has n_max_atoms + 1 rows and heavy atoms (explicit H removed) are the nodes.
+            batch = super()._mols_to_batch(inputs)
+            for i, (mol, rdmol) in enumerate(zip(inputs, batch)):
+                if rdmol is not None and rdmol.GetNumAtoms() > self.n_max_atoms:
+                    self.skipped.add(mol.smiles)
+                    batch[i] = None
+            return batch
+
+        def _get_reactions(self, inputs, num_results):
+            # Beam search adds atoms; a path that grows past the mask size crashes its whole batch.
+            # Retry the inputs one by one; an input that still crashes gets no predictions.
+            try:
+                return super()._get_reactions(inputs, num_results)
+            except RuntimeError as e:
+                if "must match the size of tensor" not in str(e):
+                    raise
+            results = []
+            for mol in inputs:
+                try:
+                    results += super()._get_reactions([mol], num_results)
+                except RuntimeError as e:
+                    if "must match the size of tensor" not in str(e):
+                        raise
+                    self.skipped.add(mol.smiles)
+                    results.append([])
+            return results
+
+    return MEGANModel
+
+
 def build_model(model: str, direction: str, out_root: Path, device: str):
     from syntheseus.reaction_prediction.inference.config import (
         BackwardModelClass,
@@ -60,11 +100,8 @@ def build_model(model: str, direction: str, out_root: Path, device: str):
 
         prepare(out_root / "external/GLN")
     if direction == "retro":
-        cls = (
-            seeded_root_aligned_class()
-            if model == "RootAligned"
-            else BackwardModelClass[model].value
-        )
+        special = {"RootAligned": seeded_root_aligned_class, "MEGAN": megan_class}
+        cls = special[model]() if model in special else BackwardModelClass[model].value
         built = cls(model_dir=model_dir, device=device, **kwargs)
         if model in ("LocalRetro", "RetroKNN"):
             built.model.eval()  # the syntheseus wrapper leaves dropout on
@@ -170,6 +207,7 @@ def main() -> None:
         "n_dropped": counts["n_dropped"],
         "n_multi_product": counts["n_multi_product"],
         "n_multi_tie": counts["n_multi_tie"],
+        "n_skipped": getattr(model, "n_skipped", 0),
         "top1": results.top_k[0],
         "top10": results.top_k[9],
         "mrr": results.mrr,

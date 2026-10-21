@@ -20,6 +20,7 @@ TOPK_COLUMNS = [
     "n_dropped",
     "n_multi_product",
     "n_multi_tie",
+    "n_skipped",
     "top1",
     "top10",
     "mrr",
@@ -35,7 +36,13 @@ def topk_table(runs_root: Path) -> pd.DataFrame:
             n_saved = sum(1 for _ in f)
         if n_saved != result["n"]:
             raise RuntimeError(f"{run}: {n_saved} saved predictions, expected {result['n']}")
-        rows.append({k: result[k] for k in TOPK_COLUMNS})
+        row = {k: ({"n_skipped": 0} | result)[k] for k in TOPK_COLUMNS}
+        # Rows removed by the model's own preprocessing filter count as misses.
+        total = row["n"] + row["n_dropped"]
+        for k in ("top1", "top10", "mrr"):
+            row[k] *= row["n"] / total
+        row["n"] = total
+        rows.append(row)
     return pd.DataFrame(rows, columns=TOPK_COLUMNS)
 
 

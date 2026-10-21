@@ -47,7 +47,14 @@ def batch_path(folder: Path, keys: list[str]) -> Path:
     return folder / f"batch_{hashlib.sha256(chr(10).join(keys).encode()).hexdigest()[:16]}.pkl"
 
 
-def save_batch(folder: Path, keys: list[str], predictions, seconds: float) -> None:
+def save_batch(
+    folder: Path,
+    keys: list[str],
+    predictions,
+    seconds: float,
+    skipped: frozenset[str] = frozenset(),
+) -> None:
+    """`skipped` are the keys the model refused (no prediction, e.g. MEGAN above its atom limit)."""
     folder.mkdir(parents=True, exist_ok=True)
     path = batch_path(folder, keys)
     tmp = path.with_suffix(".tmp")
@@ -55,6 +62,7 @@ def save_batch(folder: Path, keys: list[str], predictions, seconds: float) -> No
         pickle.dumps(
             {
                 "seconds": seconds,
+                "skipped": sorted(skipped),
                 "predictions": {k: pickle.dumps(list(p)) for k, p in zip(keys, predictions)},
             }
         )
@@ -62,21 +70,23 @@ def save_batch(folder: Path, keys: list[str], predictions, seconds: float) -> No
     tmp.replace(path)
 
 
-def load_cache(folder: Path) -> tuple[dict[str, bytes], float]:
-    """All cached predictions (key -> pickled list) and the summed batch seconds."""
-    cached, seconds = {}, 0.0
+def load_cache(folder: Path) -> tuple[dict[str, bytes], float, set[str]]:
+    """All cached predictions (key -> pickled list), the summed batch seconds and the skipped keys."""
+    cached, seconds, skipped = {}, 0.0, set()
     for path in sorted(folder.glob("batch_*.pkl")):
         batch = pickle.loads(path.read_bytes())
         cached.update(batch["predictions"])
         seconds += batch["seconds"]
-    return cached, seconds
+        skipped.update(batch.get("skipped", ()))
+    return cached, seconds, skipped
 
 
 class CachedModel:
     """Serves cached predictions to syntheseus `compute_metrics`. Each call returns fresh objects."""
 
     def __init__(self, folder: Path, direction: str, num_top: int):
-        self.cached, _ = load_cache(folder)
+        self.cached, _, self.skipped = load_cache(folder)
+        self.n_skipped = 0  # rows served without a prediction because the model skipped the input
         self.direction = direction
         self.num_top = num_top
 
@@ -91,8 +101,10 @@ class CachedModel:
 
     def __call__(self, inputs, num_results: int):
         assert num_results == self.num_top
+        keys = [self._key(i) for i in inputs]
+        self.n_skipped += sum(k in self.skipped for k in keys)
         try:
-            return [pickle.loads(self.cached[self._key(i)]) for i in inputs]
+            return [pickle.loads(self.cached[k]) for k in keys]
         except KeyError as e:
             raise SystemExit(f"No cached prediction for {e}. Run emulator_bench.predict first.")
 

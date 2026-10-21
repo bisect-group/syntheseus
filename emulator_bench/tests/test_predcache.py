@@ -40,3 +40,10 @@ def test_missing_input_stops(tmp_path):
     save_batch(tmp_path, ["CCO"], [[]], seconds=0.0)
     with pytest.raises(SystemExit):
         CachedModel(tmp_path, "retro", 10)([Molecule("CC")], num_results=10)
+
+
+def test_skipped_keys_are_cached_and_counted(tmp_path):
+    save_batch(tmp_path, ["CCO", "CC"], [[prediction("CCO", "CC.O")], []], 1.0, frozenset({"CC"}))
+    model = CachedModel(tmp_path, "retro", 10)
+    model([Molecule("CC"), Molecule("OCC"), Molecule("CC")], num_results=10)
+    assert model.skipped == {"CC"} and model.n_skipped == 2
