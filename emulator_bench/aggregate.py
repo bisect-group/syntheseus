@@ -29,7 +29,7 @@ TOPK_COLUMNS = [
 
 def topk_table(runs_root: Path) -> pd.DataFrame:
     rows = []
-    for done in sorted(runs_root.glob(f"*/*/*/*/*/{DONE_MARKER}")):
+    for done in sorted(runs_root.glob(f"*/reaction_outcome_*/*/*/{DONE_MARKER}")):
         run = done.parent
         result = json.loads((run / "result.json").read_text())
         with open(run / "predictions.jsonl") as f:
@@ -65,7 +65,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out_root", type=Path, default=OUT_ROOT)
     p.add_argument(
-        "--runs_root", type=Path, default=None, help="Default: out_root/<direction> folders"
+        "--runs_root", type=Path, default=None, help="Default: out_root"
     )
     args = p.parse_args()
     runs_root = args.runs_root or args.out_root

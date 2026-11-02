@@ -12,7 +12,7 @@ Run all commands from the syntheseus submodule root. `commands.txt` has the exac
 - Forward: Chemformer and R-SMILES (RootAligned), with the authors' USPTO-MIT mixed checkpoints.
 - Input: the `test` file of each split folder under
   `data/processed/datasets/reaction_outcome_dataset/` (random 4,299 + time 3,511 + DRFP 4,298 = 12,108 rows,
-  11,683 unique). Zero-shot inference only, so `--folds` defaults to `test`. `--folds train val test` also works.
+  11,683 unique). Zero-shot inference only, so `--folds` defaults to `test`, the only fold with stored runs.
 - The product of each row is its largest product (most heavy atoms). The reactant set is the target.
 - Metrics: top-1, top-10 and MRR (MRR@10) with syntheseus `compute_metrics`, top-10 for every model. Per-row predictions are saved.
 - Dedup cache: each unique model input is predicted once, then expanded to every split row (see Two phases).
@@ -24,7 +24,7 @@ Run all commands from the syntheseus submodule root. `commands.txt` has the exac
 - `launch.py`: runs both phases for all models x directions x splits x folds. Flags: `--gpus --procs_per_gpu --workers
   --eval_procs --models --directions --splits --folds --limit --dry_run`.
 - `predict.py`, `predcache.py`: one shard of the prediction cache; cache key, storage and the cached model.
-- `run_model.py`: one run per split file and fold. Writes `predictions.jsonl`, `result.json` and a `DONE` marker.
+- `run_model.py`: one run per split file (test fold). Writes `predictions.jsonl`, `result.json` and a `DONE` marker.
   `--no_cache` runs the model on every row instead.
 - `common.py`: split discovery, largest-product rule, JSONL cache.
 - `rsmiles_forward.py`, `rsmiles_forward_translate.yml`: R-SMILES forward model.
@@ -65,7 +65,7 @@ and scores with and without it (see `REPORT.md`).
 
 `OUT = outputs/baselines/syntheseus`
 
-- Runs: `OUT/<direction>/<model>/<split_group>/<split_name>/<fold>/` (`split_name` is `all` for flat groups).
+- Runs: `OUT/<model>/reaction_outcome_<retro|forward>/<split_group>/<split_name>/` (test fold only; `split_name` is `all` for flat groups).
 - Checkpoints: `OUT/checkpoints/`. Corpora: `OUT/corpora/` with `manifest.json`. Caches: `OUT/cache/`.
 - Summaries: `OUT/summary_topk.csv`, `OUT/summary_overlap.csv`, `OUT/summary_overlap_by_corpus.csv`.
 

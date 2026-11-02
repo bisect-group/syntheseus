@@ -57,7 +57,9 @@ def discover_splits(data_dir: Path = DATA_DIR) -> list[SplitFile]:
 
 
 def run_dir(out_root: Path, direction: str, model: str, split: SplitFile, fold: str) -> Path:
-    return out_root / direction / model / split.group / split.name / fold
+    if fold != "test":
+        raise ValueError(f"Runs are stored for the test fold only, got {fold!r}")
+    return out_root / model / f"reaction_outcome_{direction}" / split.group / split.name
 
 
 def drfp_threshold(data_dir: Path = DATA_DIR) -> float:
