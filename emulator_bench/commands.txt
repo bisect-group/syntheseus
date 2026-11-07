@@ -18,6 +18,11 @@ git clone https://github.com/kmaziarz/GLN $OUT/external/GLN
 git -C $OUT/external/GLN checkout 5437fa7a7cfe98354aa5b0e743b964a97971016c
 make -C $OUT/external/GLN/gln/mods/mol_gnn/mg_clib
 
+# 3b. Curated retro split files (see README "Retro targets"). The mapper needs rxnmapper (any env).
+$PY -m emulator_bench.retro_targets prepare
+<python with rxnmapper> -I emulator_bench/map_reactions.py <requests.parquet> <maps.parquet>   # paths printed by prepare
+$PY -m emulator_bench.retro_targets build
+
 # 4. Overlap audit (CPU, 16 threads): writes $OUT/overlap/ and $OUT/summary_overlap_by_corpus.csv
 taskset -c 0-15 $PY -u -m emulator_bench.overlap
 
@@ -32,7 +37,14 @@ $PY -m emulator_bench.launch --gpus 0 --workers 4 --procs_per_gpu 4
 $PY -m emulator_bench.launch --gpus 0 --models LocalRetro --directions retro \
     --splits random_splits_grouped_rxn_key --folds test
 
-# 7. Summaries: $OUT/summary_topk.csv and $OUT/summary_overlap.csv
+# 6b. Seeds 1 and 2 (seed 0 is the default run): same commands with --seed, runs go to $OUT/seed<N>
+$PY -m emulator_bench.launch --directions retro --gpus 3 --seed 1
+$PY -m emulator_bench.launch --directions retro --gpus 3 --seed 2
+
+# 7. Summaries: common test set, retro variants, then $OUT/summary_topk.csv, summary_topk_seeds.csv,
+#    summary_overlap.csv
+$PY -m emulator_bench.common_set --seeds 0 1 2
+$PY -m emulator_bench.rescore
 $PY -m emulator_bench.aggregate
 
 # Smoke test (32 rows)
@@ -46,9 +58,43 @@ $PY -m emulator_bench.compare_runs $S/pinned/retro/LocalRetro/random_splits_grou
 
 # Equivalence with the syntheseus CLI (retro, same JSONL)
 syntheseus eval-single-step data_dir=<jsonl dir with test.jsonl> model_class=LocalRetro fold=TEST \
-    num_top_results=10 results_dir=<dir> print_idxs=[1,3,5,10] include_predictions=True
+    num_top_results=50 results_dir=<dir> print_idxs=[1,10,50] include_predictions=True
 
 # Checks
 $PY -m pytest emulator_bench/tests -q
 ruff check emulator_bench && ruff format --check emulator_bench
 git diff --check
+
+# ---------------------------------------------------------------------------
+# Fine-tuning (see README "Fine-tuning"). Needs the curated retro files first.
+# ---------------------------------------------------------------------------
+
+# 1. Per-model training data. LocalRetro's CSVs also feed MEGAN; RootAligned has its own variant
+#    because it needs every product atom mapped.
+$PY -m emulator_bench.finetune_data --model LocalRetro
+$PY -m emulator_bench.finetune_data --model RootAligned
+$PY -m emulator_bench.finetune_data --model Chemformer --skip_maps
+
+# 2. Train one cell (model x direction x split x seed). Seed 0 keeps the original paths.
+$PY -m emulator_bench.finetune_chemformer  --split random_splits_grouped_rxn_key --direction retro --seed 0
+$PY -m emulator_bench.finetune_rootaligned --split random_splits_grouped_rxn_key --direction forward --seed 0
+$PY -m emulator_bench.finetune_megan       --split random_splits_grouped_rxn_key --seed 0   # --direction retro
+$PY -m emulator_bench.finetune_megan       --split random_splits_grouped_rxn_key --seed 0 --direction forward
+$PY -m emulator_bench.finetune_localretro  --split random_splits_grouped_rxn_key            # retro only
+
+# 3. Evaluate it through the usual path (model, group, name, shards, direction, seed)
+$OUT/finetune_eval.sh Chemformer random_splits_grouped_rxn_key all 6 retro 0
+
+# 4. The whole matrix across GPUs: one worker per GPU, each claiming cells atomically. Resumable.
+$OUT/parallel_worker.sh 0 &
+$OUT/parallel_worker.sh 1 &
+$OUT/parallel_worker.sh 2 &
+
+# 4b. Forward MEGAN, which parallel_worker.sh does not cover. Unlike finetune_eval.sh (which pins
+#     CUDA_VISIBLE_DEVICES=0) this takes the GPU, so training and evaluation stay on it.
+#     usage: megan_forward_run.sh <split_key> <seed> <gpu> [shards]
+$OUT/megan_forward_run.sh random_splits_grouped_rxn_key 0 2 4
+
+# 5. USPTO-50K control: the same wrapper on the data the checkpoints were trained on, which is how
+#    the zero-shot numbers were shown to be a property of the data and not of this code.
+$PY -m emulator_bench.checks.uspto50k_control --models LocalRetro --limit 500

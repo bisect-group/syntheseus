@@ -11,12 +11,21 @@ from pathlib import Path
 from emulator_bench.common import discover_splits, load_hparams, open_dataset
 
 
-def cache_dir(out_root: Path, model: str, direction: str, num_top: int) -> Path:
-    """One folder per model, direction, top-N and checkpoint plus model settings."""
+def cache_dir(
+    out_root: Path, model: str, direction: str, num_top: int, seed: int = 0, tag: str = ""
+) -> Path:
+    """One folder per model, direction, top-N, checkpoint plus model settings, seed and tag.
+
+    `tag` separates weights the hyper-parameters do not describe, such as a fine-tuned checkpoint.
+    """
     hp = load_hparams()["models"][model][direction]
     ident = json.dumps({k: hp[k] for k in ("checkpoint", "model_kwargs")}, sort_keys=True)
     digest = hashlib.sha256(ident.encode()).hexdigest()[:8]
-    return out_root / f"cache/predictions_v2/{direction}/{model}/top{num_top}_{digest}"
+    suffix = f"_seed{seed}" if seed else ""
+    tagged = f"_{tag}" if tag else ""
+    return (
+        out_root / f"cache/predictions_v2/{direction}/{model}/top{num_top}_{digest}{tagged}{suffix}"
+    )
 
 
 def input_of(sample, direction: str):
@@ -29,12 +38,23 @@ def input_of(sample, direction: str):
     return product, product.smiles
 
 
-def unique_inputs(out_root: Path, model: str, direction: str, folds, limit=None) -> dict:
-    """Unique inputs over all split files, sorted by key. `limit` keeps the first N rows per file."""
+def unique_inputs(
+    out_root: Path, model: str, direction: str, folds, limit=None, splits=None
+) -> dict:
+    """Unique inputs of the split files, sorted by key. `limit` keeps the first N rows per file.
+
+    `splits` ("group" or "group/name") restricts the work to the split files being evaluated;
+    without it every split file on disk is predicted, which a fine-tuned run does not need.
+    """
     from syntheseus.reaction_prediction.data.dataset import DataFold
 
     found = {}
-    for split in discover_splits():
+    chosen = [
+        s
+        for s in discover_splits()
+        if not splits or f"{s.group}/{s.name}" in splits or s.group in splits
+    ]
+    for split in chosen:
         for fold in folds:
             dataset, _ = open_dataset(out_root, split, fold, model, direction)
             for sample in islice(dataset[DataFold(fold)], limit):

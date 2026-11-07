@@ -10,7 +10,8 @@ Reaction outcome is zero-shot here. No model is trained, tuned or seeded. All co
   Each uses the released USPTO-50K checkpoint.
 - Forward models: Chemformer and R-SMILES (RootAligned), with the authors' USPTO-MIT mixed checkpoints.
 - Each model gives a ranked list of candidates for an input. Retro input is the product. Forward input is the reactant set.
-- The wrapper predicts the test files of the Leak-CURBER reaction outcome splits and scores top-1, top-10 and MRR@10.
+- The wrapper predicts the test files of the Leak-CURBER reaction outcome splits and scores top-1, top-10 and top-50
+  with MRR@50 for retro, and top-1, top-10 and MRR@10 for forward.
 - The wrapper also audits the overlap between each test file and each model's training corpus.
 
 ## 2. Original default settings
@@ -42,8 +43,10 @@ The publication PDFs were not read for this report. The settings come from the r
   The cache folder name has a hash of the checkpoint and model settings. A restarted shard skips finished batches.
 - Evaluate phase (`run_model.py`, CPU): each split file reads the cache and runs syntheseus `compute_metrics`.
   It writes `predictions.jsonl`, `result.json` and a `DONE` marker. `--no_cache` runs the model on every row.
-- The product of a row is its largest product (most heavy atoms; ties: longer canonical SMILES, then lexicographic).
-  The retro target is the full reactant set. The forward target is that one product.
+- Retro uses the curated files of `retro_targets.py` (README, "Retro targets"): the main product is never a cofactor or
+  spectator, and the target is only the reactants that give heavy atoms to it (RXNMapper mapping).
+- Forward: the product of a row is its largest product (most heavy atoms; ties: longer canonical SMILES, then
+  lexicographic). The forward target is that one product.
 - Input is 12,108 test rows (random 4,299, time 3,511, DRFP 4,298), 11,683 unique.
 - Determinism measures in the code:
   - `build_model` calls `model.eval()` for LocalRetro and RetroKNN. The syntheseus wrapper leaves dropout on.
@@ -88,7 +91,7 @@ The publication PDFs were not read for this report. The settings come from the r
   See section 9.
 - Per-input seed for RootAligned retro and R-SMILES forward: needed for batch independence. Syntheseus itself seeds once globally.
   The seed changes which random roots are drawn, so single outputs can differ from a plain syntheseus run.
-- Top-N is 10 for every model by user decision.
+- Top-N is 50 for retro and 10 for forward, by user decision. The equivalence checks below were run at top-10.
 
 ## 7. Exact commands
 

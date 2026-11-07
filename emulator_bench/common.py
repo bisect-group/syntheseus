@@ -12,12 +12,28 @@ import numpy as np
 import pandas as pd
 
 EMULATOR_ROOT = Path(__file__).resolve().parents[3]
-DATA_DIR = EMULATOR_ROOT / "data/processed/datasets/reaction_outcome_dataset"
+# Checkouts differ in whether the dataset folder sits under data/processed/datasets/ or data/processed/.
+DATA_DIR = next(
+    (
+        p
+        for p in (
+            EMULATOR_ROOT / "data/processed/datasets/reaction_outcome_dataset",
+            EMULATOR_ROOT / "data/processed/reaction_outcome_dataset",
+        )
+        if p.exists()
+    ),
+    EMULATOR_ROOT / "data/processed/datasets/reaction_outcome_dataset",
+)
+# Curated retro split files (emulator_bench.retro_targets), same layout as DATA_DIR.
+RETRO_DIR = DATA_DIR.with_name("reaction_outcome_dataset_retro")
 OUT_ROOT = EMULATOR_ROOT / "outputs/baselines/syntheseus"
 FOLDS = ("train", "val", "test")
 DONE_MARKER = "DONE"
+TOP_KS = (1, 10, 50)  # reported top-k, up to the run's num_top_results
 CACHE_VERSION = 1
-TARGET_VERSION = 2  # validity and JSONL caches: the target is the largest product
+# Validity and JSONL caches. 2: the target is the largest product. 3: retro reads the curated
+# split files (main product that is not a cofactor, atom-mapped reactants).
+TARGET_VERSION = 3
 
 # Retrosynthesis models with their syntheseus default (USPTO-50K) checkpoints.
 RETRO_MODELS = (
@@ -30,7 +46,7 @@ RETRO_MODELS = (
     "RetroKNN",
     "RootAligned",
 )
-FORWARD_MODELS = ("Chemformer", "RootAligned")
+FORWARD_MODELS = ("Chemformer", "MEGAN", "RootAligned")
 HPARAMS_PATH = Path(__file__).with_name("default_hparams.json")
 
 
@@ -142,32 +158,40 @@ def validity_table(out_root: Path, data_dir: Path = DATA_DIR) -> pd.DataFrame:
     return table
 
 
-def write_jsonl(
+def retro_file(split: SplitFile, fold: str, retro_dir: Path = RETRO_DIR) -> Path:
+    """Curated retro split file of one split folder and fold (see emulator_bench.retro_targets)."""
+    folder = (
+        retro_dir / split.group if split.name == "all" else retro_dir / split.group / split.name
+    )
+    return folder / f"{fold}.parquet"
+
+
+def write_curated_jsonl(
     out_root: Path, split: SplitFile, fold: str, direction: str, extra_filter=None
 ) -> tuple[Path, dict]:
-    """Write the syntheseus JSONL for one split file. Returns (path, counts).
+    """Write the JSONL of one split file from its curated retro file. Returns (path, counts).
 
-    The product of each row is its largest product (see `largest_product`), for both directions.
-    Rows RDKit cannot parse are dropped. `extra_filter(df) -> bool mask` drops rows the original
-    model cannot take; it sees the main product in the `products` column.
+    Both directions read the same curated rows, because forward synthesis is exactly the reverse of
+    the retro task: the curated reactant set and the main product swap roles. A row holds both, and
+    syntheseus takes the input from the model's direction, so one file serves both.
+
+    `extra_filter(df) -> bool mask` drops rows a model's own preprocessing cannot take. Rows the
+    curation removed (`<fold>_dropped.parquet`) are not part of the benchmark; they are reported in
+    the counts but not scored.
     """
-    df = pd.read_parquet(split.fold_path(fold), columns=["rxn_key", "reactants", "products"])
-    info = validity_table(out_root).set_index("rxn_key").loc[df["rxn_key"]]
-    df["products"] = info["main_product"].to_numpy()
-    keep = info["valid"].to_numpy()
-    n_multi = int((keep & (info["n_products"] > 1).to_numpy()).sum())
-    n_tie = int((keep & info["tie"].to_numpy()).sum())
-    if extra_filter is not None:
-        valid_rows = df[keep]
-        keep = keep.copy()
-        keep[np.flatnonzero(keep)] = np.asarray(extra_filter(valid_rows))
-    kept = df[keep]
+    src = retro_file(split, fold)
+    if not src.exists():
+        raise SystemExit(
+            f"Missing {src}. Build the curated retro files first (emulator_bench.retro_targets)."
+        )
+    df = pd.read_parquet(src)
+    dropped = pd.read_parquet(src.with_name(f"{fold}_dropped.parquet"))
+    kept = df if extra_filter is None else df[np.asarray(extra_filter(df))]
     tag = "" if extra_filter is None else f"_{extra_filter.__name__}"
-    # The file content hash is part of the path, so a changed split file forces a rebuild.
-    digest = hashlib.sha256(split.fold_path(fold).read_bytes()).hexdigest()[:12]
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()[:12]
     path = (
-        out_root
-        / f"cache/jsonl_v{TARGET_VERSION}/{direction}{tag}/{split.group}/{split.name}/{fold}_{digest}.jsonl"
+        out_root / f"cache/jsonl_v{TARGET_VERSION}/{direction}{tag}"
+        f"/{split.group}/{split.name}/{fold}_{digest}.jsonl"
     )
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,7 +203,7 @@ def write_jsonl(
                     "products": [{"smiles": p}],
                 }
             )
-            for k, r, p in zip(kept["rxn_key"], kept["reactants"], kept["products"])
+            for k, r, p in zip(kept["rxn_key"], kept["reactants"], kept["product"])
         )
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text("\n".join(lines) + "\n")
@@ -187,23 +211,41 @@ def write_jsonl(
     counts = {
         "n_kept": len(kept),
         "n_dropped": len(df) - len(kept),
-        "n_multi_product": n_multi,
-        "n_multi_tie": n_tie,
+        "n_multi_product": int((kept["minor_products"] != "").sum()),
+        "n_multi_tie": int(kept["tie"].sum()),
+        "n_curation_dropped": len(dropped),
+        "n_curation_merged": int((kept["n_merged"] - 1).sum()),
     }
     return path, counts
 
 
+def write_jsonl(
+    out_root: Path, split: SplitFile, fold: str, direction: str, extra_filter=None
+) -> tuple[Path, dict]:
+    """Write the syntheseus JSONL for one split file. Returns (path, counts).
+
+    Both directions read the curated retro files, so forward synthesis is scored on exactly the
+    reverse of the retro task: the same rows, with the curated reactant set and the main product
+    swapping roles. `extra_filter(df) -> bool mask` drops rows the original model cannot take.
+    """
+    return write_curated_jsonl(out_root, split, fold, direction, extra_filter)
+
+
 def rsmiles_forward_ok(df):
-    """Rows the original R-SMILES forward preprocessing keeps (generate_RtoP_data.py `multi_process`)."""
+    """Rows the original R-SMILES forward preprocessing keeps (generate_RtoP_data.py `multi_process`).
+
+    The curated frame names the single target `product`; the raw frame used `products`.
+    """
     from rdkit import Chem
 
-    def keep(reactants: str, products: str) -> bool:
+    def keep(reactants: str, product: str) -> bool:
         return (
             Chem.MolFromSmiles(reactants).GetNumAtoms() >= 5  # small_r
-            and Chem.MolFromSmiles(products).GetNumAtoms() > 1  # small_p, on the main product
+            and Chem.MolFromSmiles(product).GetNumAtoms() > 1  # small_p, on the main product
         )
 
-    return [keep(r, p) for r, p in zip(df["reactants"], df["products"])]
+    products = df["product"] if "product" in df else df["products"]
+    return [keep(r, p) for r, p in zip(df["reactants"], products)]
 
 
 def open_dataset(out_root: Path, split: SplitFile, fold: str, model: str, direction: str):

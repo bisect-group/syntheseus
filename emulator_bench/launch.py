@@ -22,12 +22,14 @@ from emulator_bench.common import (
     OUT_ROOT,
     RETRO_MODELS,
     discover_splits,
+    load_hparams,
     run_dir,
 )
 
 
 def build_jobs(args) -> list[tuple[str, str, object, str]]:
     models = {"retro": RETRO_MODELS, "forward": FORWARD_MODELS}
+    hparams = load_hparams()
     splits = [
         s
         for s in discover_splits()
@@ -38,6 +40,10 @@ def build_jobs(args) -> list[tuple[str, str, object, str]]:
         for model, split, fold in itertools.product(models[direction], splits, args.folds):
             if args.models and model not in args.models:
                 continue
+            # A model with no released checkpoint for this direction (forward MEGAN) has nothing to
+            # run zero-shot; `finetune_eval.sh` reaches it by passing an explicit --model_dir.
+            if hparams["models"][model][direction]["checkpoint"] == "finetuned_only":
+                continue
             if (
                 run_dir(args.runs_root or args.out_root, direction, model, split, fold)
                 / DONE_MARKER
@@ -47,12 +53,16 @@ def build_jobs(args) -> list[tuple[str, str, object, str]]:
     return jobs
 
 
+def seed_tag(args) -> str:
+    return f"_seed{args.seed}" if args.seed else ""
+
+
 def predict_commands(args, jobs) -> list[tuple[str, list[str]]]:
     """(log name, command) for every shard of every (model, direction) with runs left to do."""
     pairs = sorted({(model, direction) for model, direction, _, _ in jobs})
     return [
         (
-            f"predict_{direction}_{model}_shard{i}of{args.workers}",
+            f"predict_{direction}_{model}_shard{i}of{args.workers}{seed_tag(args)}",
             [
                 sys.executable,
                 "-m",
@@ -69,6 +79,8 @@ def predict_commands(args, jobs) -> list[tuple[str, list[str]]]:
                 str(args.workers),
                 "--out_root",
                 str(args.out_root),
+                "--seed",
+                str(args.seed),
             ]
             + (["--limit", str(args.limit)] if args.limit else []),
         )  # fmt: skip
@@ -84,12 +96,14 @@ def run_commands(args, jobs) -> list[tuple[str, list[str]]]:
             sys.executable, "-m", "emulator_bench.run_model",
             "--model", model, "--direction", direction, "--split_group", split.group,
             "--split_name", split.name, "--fold", fold, "--out_root", str(args.out_root),
+            "--seed", str(args.seed),
         ]  # fmt: skip
         if args.runs_root:
             cmd += ["--runs_root", str(args.runs_root)]
         if args.limit:
             cmd += ["--limit", str(args.limit)]
-        commands.append((f"{direction}_{model}_{split.group}_{split.name}_{fold}", cmd))
+        name = f"{direction}_{model}_{split.group}_{split.name}_{fold}{seed_tag(args)}"
+        commands.append((name, cmd))
     return commands
 
 
@@ -149,8 +163,16 @@ def main() -> None:
         "--folds", nargs="+", default=["test"], choices=FOLDS, help="Default: test only (zero-shot)"
     )
     p.add_argument("--limit", type=int, default=None, help="First N rows per run (smoke tests)")
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed; seeds other than 0 default to runs_root out_root/seed<N>",
+    )
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args()
+    if args.seed and args.runs_root is None:
+        args.runs_root = args.out_root / f"seed{args.seed}"
 
     jobs = build_jobs(args)
     predict = predict_commands(args, jobs)

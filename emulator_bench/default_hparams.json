@@ -1,13 +1,13 @@
 {
   "_comment": "Zero-shot inference settings. Nothing is trained or tuned. 'source' names where each value comes from.",
   "num_top_results": {
-    "retro": 10,
+    "retro": 50,
     "forward": 10,
-    "source": "retro and forward: top 10 by user decision. Forward beam size 10 and n_best 10 of the original R-SMILES RtoP translate config and of Chemformer's own evaluation"
+    "source": "retro: top 50 by user decision (metrics top-1/10/50); beam-search models then use beam size 50, RootAligned retro keeps the checkpoint's beam 10 x 20 augmentations. forward: top 10 by user decision, beam size 10 and n_best 10 of the original R-SMILES RtoP translate config and of Chemformer's own evaluation"
   },
   "batch_size": 16,
   "batch_size_source": "syntheseus eval-single-step default (BaseEvalConfig.batch_size)",
-  "metrics": "top-k and MRR from syntheseus TopKMetricsAccumulator over num_top_results predictions; exact match on syntheseus Reaction equality (canonical SMILES with stereo, reactant bag order-free, reagents ignored); skip_repeats=True",
+  "metrics": "top-k (retro: 1, 10, 50; forward: 1, 10) and MRR from syntheseus TopKMetricsAccumulator over num_top_results predictions; exact match on syntheseus Reaction equality (canonical SMILES with stereo, reactant bag order-free, reagents ignored); skip_repeats=True. rescore.py adds stereo-agnostic and multi-reference variants for retro",
   "seeds": "none: beam search is deterministic. syntheseus set_random_seed(0) is applied as in eval-single-step",
   "models": {
     "Chemformer": {
@@ -24,7 +24,8 @@
       "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {}, "notes": "Figshare article 23960745, trained by the syntheseus team on USPTO-50K."}
     },
     "MEGAN": {
-      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"n_max_atoms": 200, "max_gen_steps": 16, "beam_batch_size": 10}, "notes": "Figshare article 23960748, trained by the syntheseus team on USPTO-50K (config.gin: dataset uspto_50k, no reaction type). Kwargs are the syntheseus defaults."}
+      "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"n_max_atoms": 200, "max_gen_steps": 16, "beam_batch_size": 10}, "notes": "Figshare article 23960748, trained by the syntheseus team on USPTO-50K (config.gin: dataset uspto_50k, no reaction type). Kwargs are the syntheseus defaults."},
+      "forward": {"checkpoint": "finetuned_only", "model_kwargs": {"n_max_atoms": 200, "max_gen_steps": 8, "beam_batch_size": 10}, "notes": "No released forward MEGAN checkpoint exists in this checkout, so forward MEGAN is fine-tuned only (emulator_bench/megan_forward.py over the released code). max_gen_steps 8 is the authors' USPTO-MIT forward setting (featuriser megan_for_8_dfs_cano); n_max_atoms and beam_batch_size match the retro entry. Beam size = num_top_results = 10."}
     },
     "MHNreact": {
       "retro": {"checkpoint": "syntheseus_default", "model_kwargs": {"use_FPF": true, "num_additional_templates_to_run": 1000}, "notes": "Figshare article 23960766, trained by the syntheseus team on USPTO-50K. Kwargs are the syntheseus defaults."}

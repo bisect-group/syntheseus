@@ -16,6 +16,7 @@ from emulator_bench.common import (
     FORWARD_MODELS,
     OUT_ROOT,
     RETRO_MODELS,
+    TOP_KS,
     atomic_write_text,
     discover_splits,
     load_hparams,
@@ -25,7 +26,12 @@ from emulator_bench.common import (
 from emulator_bench.predcache import CachedModel, cache_dir
 
 
-def seeded_root_aligned_class():
+def input_seed(smiles: str, seed: int = 0) -> int:
+    """Random seed of one input: CRC32 of its SMILES, mixed with the run seed when it is not 0."""
+    return zlib.crc32((f"{seed}:{smiles}" if seed else smiles).encode())
+
+
+def seeded_root_aligned_class(seed: int = 0):
     """RootAligned retro with one random stream per input, so an output does not depend on its batch."""
     from syntheseus.reaction_prediction.inference import root_aligned
 
@@ -34,7 +40,7 @@ def seeded_root_aligned_class():
         def _get_reactions(self, inputs, num_results, **kwargs):
             results = []
             for mol in inputs:
-                random.seed(zlib.crc32(mol.smiles.encode()))
+                random.seed(input_seed(mol.smiles, seed))
                 results += super()._get_reactions([mol], num_results, **kwargs)
             return results
 
@@ -43,11 +49,23 @@ def seeded_root_aligned_class():
 
 def megan_class():
     """MEGAN that sends no molecule above its atom limit to the model; such inputs get no predictions."""
+    import fcntl
+    import tempfile
+
     from syntheseus.reaction_prediction.inference import megan
 
     class MEGANModel(megan.MEGANModel):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+            # The wrapper deletes the log files MEGAN wrote while loading, but those paths are
+            # shared, so concurrent shards unlink each other's and raise FileNotFoundError.
+            # Building one model at a time removes the race; loading is short.
+            lock = Path(tempfile.gettempdir()) / "emulator_bench_megan_load.lock"
+            with open(lock, "w") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                try:
+                    super().__init__(*args, **kwargs)
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
             self.skipped: set[str] = set()  # SMILES of oversize inputs
 
         def _mols_to_batch(self, inputs):
@@ -81,7 +99,14 @@ def megan_class():
     return MEGANModel
 
 
-def build_model(model: str, direction: str, out_root: Path, device: str):
+def build_model(
+    model: str,
+    direction: str,
+    out_root: Path,
+    device: str,
+    seed: int = 0,
+    model_dir: Path | None = None,
+):
     from syntheseus.reaction_prediction.inference.config import (
         BackwardModelClass,
         ForwardModelClass,
@@ -90,17 +115,15 @@ def build_model(model: str, direction: str, out_root: Path, device: str):
     hp = load_hparams()["models"][model][direction]
     kwargs = dict(hp.get("model_kwargs", {}))
     # A None model_dir makes syntheseus download its default checkpoint into SYNTHESEUS_CACHE_DIR.
-    model_dir = (
-        out_root / "checkpoints" / model / direction
-        if hp["checkpoint"] == "authors_release"
-        else None
-    )
+    # An explicit model_dir (a fine-tuned checkpoint) overrides both.
+    if model_dir is None and hp["checkpoint"] == "authors_release":
+        model_dir = out_root / "checkpoints" / model / direction
     if model == "GLN":
         from emulator_bench.gln_compat import prepare
 
         prepare(out_root / "external/GLN")
     if direction == "retro":
-        special = {"RootAligned": seeded_root_aligned_class, "MEGAN": megan_class}
+        special = {"RootAligned": lambda: seeded_root_aligned_class(seed), "MEGAN": megan_class}
         cls = special[model]() if model in special else BackwardModelClass[model].value
         built = cls(model_dir=model_dir, device=device, **kwargs)
         if model in ("LocalRetro", "RetroKNN"):
@@ -110,6 +133,11 @@ def build_model(model: str, direction: str, out_root: Path, device: str):
         from emulator_bench.rsmiles_forward import RootAlignedForwardModel
 
         return RootAlignedForwardModel(model_dir=model_dir, device=device, **kwargs)
+    if model == "MEGAN":
+        # syntheseus ships no forward MEGAN; `megan_forward` adds one over the released code.
+        from emulator_bench.megan_forward import MEGANForwardModel
+
+        return MEGANForwardModel(model_dir=model_dir, device=device, **kwargs)
     return ForwardModelClass[model].value(
         model_dir=model_dir, device=device, is_forward=True, **kwargs
     )
@@ -145,6 +173,13 @@ def main() -> None:
         "--num_top_results", type=int, default=None, help="Default from default_hparams.json"
     )
     p.add_argument("--batch_size", type=int, default=None, help="Default from default_hparams.json")
+    p.add_argument("--seed", type=int, default=0, help="Global and per-input random seed")
+    p.add_argument(
+        "--model_dir", type=Path, default=None, help="Checkpoint directory (fine-tuned weights)"
+    )
+    p.add_argument(
+        "--tag", default="", help="Prediction cache tag, e.g. finetuned_<dataset>; with --model_dir"
+    )
     args = p.parse_args()
     # torch >= 2.6 loads checkpoints with weights_only=True. The released checkpoints are pickles of
     # library classes, so this variable restores the old behaviour. It has no effect on torch < 2.6.
@@ -157,7 +192,7 @@ def main() -> None:
     from syntheseus.reaction_prediction.data.dataset import DataFold
     from syntheseus.reaction_prediction.utils.misc import set_random_seed
 
-    set_random_seed(0)  # as in syntheseus eval-single-step
+    set_random_seed(args.seed)  # 0 as in syntheseus eval-single-step
 
     split = next(
         s for s in discover_splits() if s.group == args.split_group and s.name == args.split_name
@@ -177,10 +212,14 @@ def main() -> None:
     dataset, counts = open_dataset(args.out_root, split, args.fold, args.model, args.direction)
     t0 = time.time()
     if args.no_cache:
-        model = build_model(args.model, args.direction, args.out_root, args.device)
+        model = build_model(
+            args.model, args.direction, args.out_root, args.device, args.seed, args.model_dir
+        )
     else:
         model = CachedModel(
-            cache_dir(args.out_root, args.model, args.direction, num_top), args.direction, num_top
+            cache_dir(args.out_root, args.model, args.direction, num_top, args.seed, args.tag),
+            args.direction,
+            num_top,
         )
     t_load = time.time() - t0
     t0 = time.time()
@@ -208,10 +247,14 @@ def main() -> None:
         "n_multi_product": counts["n_multi_product"],
         "n_multi_tie": counts["n_multi_tie"],
         "n_skipped": getattr(model, "n_skipped", 0),
-        "top1": results.top_k[0],
-        "top10": results.top_k[9],
-        "mrr": results.mrr,
+        "n_curation_dropped": counts.get("n_curation_dropped", 0),
+        "n_curation_merged": counts.get("n_curation_merged", 0),
+        **{f"top{k}": results.top_k[k - 1] for k in TOP_KS if k <= num_top},
+        "mrr": results.mrr,  # MRR over all num_top_results predictions
         "num_top_results": num_top,
+        "seed": args.seed,
+        "tag": args.tag,
+        "model_dir": str(args.model_dir) if args.model_dir else None,
         "batch_size": batch_size,
         "seconds_inference": seconds,
         "seconds_model_load": t_load,
